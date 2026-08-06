@@ -148,8 +148,11 @@ def make_temperature_record(days=8.0, start="2026-09-01 05:00", step_min=60,
     rng = np.random.default_rng(seed)
     n = int(days * 24 * 60 / step_min)
     t = pd.date_range(start=start, periods=n, freq=f"{step_min}min")
-    hours = (t - t[0]).total_seconds() / 3600.0
-    temp = mean_c + amplitude * np.sin(2 * np.pi * (hours - 9) / 24.0)
+    # .to_numpy() is essential: (t - t[0]).total_seconds() yields a pandas
+    # Index, which is immutable, so any later in-place edit would raise.
+    hours = np.asarray((t - t[0]).total_seconds() / 3600.0, dtype=float)
+    temp = np.asarray(mean_c + amplitude * np.sin(2 * np.pi * (hours - 9) / 24.0),
+                      dtype=float)
     temp += rng.normal(0, 0.45, n)
     temp += np.linspace(0, -2.5, n)  # gentle seasonal cooling
     if cold_night:
@@ -165,7 +168,7 @@ def make_ammonia_thermal_record(days=15.0, start="2026-09-01 00:00", step_min=30
     rng = np.random.default_rng(seed)
     n = int(days * 24 * 60 / step_min)
     t = pd.date_range(start=start, periods=n, freq=f"{step_min}min")
-    d = (t - t[0]).total_seconds() / 86400.0
+    d = np.asarray((t - t[0]).total_seconds() / 86400.0, dtype=float)
 
     ammonia = (6.2 * np.exp(-((d - 4.2) ** 2) / 5.0)
                + 2.1 * np.exp(-((d - 11.5) ** 2) / 6.0)
