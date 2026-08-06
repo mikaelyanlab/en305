@@ -14,9 +14,178 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from ent305_common import (DEV_REFERENCES, GOLD, MUTED, PLOT_LAYOUT, RUST,
-                           SLATE, TEAL_D, TEAL_M, forward_accumulate,
-                           make_temperature_record)
+
+# ===========================================================
+# Shared helpers — inlined so this file runs on its own.
+# ===========================================================
+# --- course palette (matches the syllabus and slide deck) -------------------
+TEAL_D = "#14606B"
+TEAL_M = "#2E7C7B"
+RUST = "#9C4A1A"
+GOLD = "#9A7A42"
+GREEN = "#5E8A63"
+SLATE = "#2C3E45"
+MUTED = "#7C8F96"
+PAPER = "#F2F6F7"
+
+PLOT_LAYOUT = dict(
+    template="plotly_white",
+    font=dict(family="Calibri, Arial, sans-serif", size=13, color=SLATE),
+    margin=dict(l=60, r=30, t=40, b=50),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+)
+
+
+# ---------------------------------------------------------------------------
+# Thermal accumulation
+# ---------------------------------------------------------------------------
+def interval_hours(times):
+    """Hours represented by each row. Last row inherits the previous spacing."""
+    t = pd.to_datetime(pd.Series(times)).reset_index(drop=True)
+    dt = t.diff().dt.total_seconds() / 3600.0
+    dt.iloc[0] = dt.iloc[1] if len(dt) > 1 and not pd.isna(dt.iloc[1]) else 1.0
+    return dt.ffill().to_numpy()
+
+
+def degree_hours(temps, hours, t_base):
+    """
+    Accumulated degree-hours per interval.
+
+    Temperatures at or below t_base bank ZERO. They do not bank a negative
+    value — the organism does not un-develop when it is cold. This is the
+    single most consequential line in the file.
+    """
+    above = np.maximum(0.0, np.asarray(temps, dtype=float) - float(t_base))
+    return above * np.asarray(hours, dtype=float)
+
+
+def forward_accumulate(df, t_base, temp_col="Temp_C", time_col="Date/Time"):
+    """Walk forwards from the first row, banking degree-hours as we go."""
+    out = df.copy().sort_values(time_col).reset_index(drop=True)
+    hrs = interval_hours(out[time_col])
+    out["Hours"] = hrs
+    out["Above_base_C"] = np.maximum(0.0, out[temp_col].astype(float) - float(t_base))
+    out["ADH_interval"] = degree_hours(out[temp_col], hrs, t_base)
+    out["ADH_cumulative"] = out["ADH_interval"].cumsum()
+    out["ADD_cumulative"] = out["ADH_cumulative"] / 24.0
+    return out
+
+
+def backward_walk(df, collection_time, target_adh, t_base,
+                  temp_col="Temp_C", time_col="Date/Time"):
+    """
+    Start at collection and walk BACKWARDS until target_adh is banked.
+
+    Returns (table, onset_time, reached). `reached` is False when the record
+    runs out before the requirement is met — which is a finding, not an error,
+    and the app must say so rather than returning the earliest timestamp as if
+    it were an answer.
+    """
+    d = df.copy()
+    d[time_col] = pd.to_datetime(d[time_col])
+    d = d[d[time_col] <= pd.to_datetime(collection_time)]
+    d = d.sort_values(time_col, ascending=False).reset_index(drop=True)
+    if d.empty:
+        return pd.DataFrame(), None, False
+
+    # Resolution-independent: pandas may hold ns or us timestamps, so never
+    # convert to raw integers here.
+    deltas = d[time_col].diff().dt.total_seconds().abs() / 3600.0
+    hrs = np.array(deltas.shift(-1).to_numpy(), dtype=float, copy=True)
+    if len(hrs) > 1 and not np.isnan(hrs[-2]):
+        hrs[-1] = hrs[-2]
+    else:
+        hrs[-1] = 1.0
+    hrs = np.nan_to_num(hrs, nan=1.0)
+
+    rows, running = [], 0.0
+    onset, reached = None, False
+    for i in range(len(d)):
+        temp = float(d.loc[i, temp_col])
+        above = max(0.0, temp - float(t_base))
+        step_h = float(hrs[i])
+        gained = above * step_h
+
+        if running + gained >= target_adh and above > 0:
+            need = target_adh - running
+            part_h = need / above
+            running = target_adh
+            onset = d.loc[i, time_col] - pd.Timedelta(hours=part_h)
+            rows.append(dict(**{time_col: d.loc[i, time_col]}, Temp_C=temp,
+                             Above_base_C=above, Hours=round(part_h, 2),
+                             ADH_interval=round(need, 1),
+                             ADH_running=round(running, 1)))
+            reached = True
+            break
+
+        running += gained
+        rows.append(dict(**{time_col: d.loc[i, time_col]}, Temp_C=temp,
+                         Above_base_C=above, Hours=step_h,
+                         ADH_interval=round(gained, 1),
+                         ADH_running=round(running, 1)))
+
+    return pd.DataFrame(rows), onset, reached
+
+
+# ---------------------------------------------------------------------------
+# Sample data — replace with real microcosm records
+# ---------------------------------------------------------------------------
+def make_temperature_record(days=8.0, start="2026-09-01 05:00", step_min=60,
+                            mean_c=20.0, amplitude=4.5, seed=305,
+                            cold_night=None):
+    """
+    Diurnal temperature record. `cold_night` = (day_offset, drop_C) inserts a
+    cold stretch, which is how a walk gets longer without banking anything.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(days * 24 * 60 / step_min)
+    t = pd.date_range(start=start, periods=n, freq=f"{step_min}min")
+    hours = (t - t[0]).total_seconds() / 3600.0
+    temp = mean_c + amplitude * np.sin(2 * np.pi * (hours - 9) / 24.0)
+    temp += rng.normal(0, 0.45, n)
+    temp += np.linspace(0, -2.5, n)  # gentle seasonal cooling
+    if cold_night:
+        off, drop = cold_night
+        mask = (hours >= off * 24) & (hours < off * 24 + 12)
+        temp[mask] -= drop
+    return pd.DataFrame({"Date/Time": t, "Temp_C": np.round(temp, 2)})
+
+
+def make_ammonia_thermal_record(days=15.0, start="2026-09-01 00:00", step_min=30,
+                                seed=305):
+    """Ammonia and thermal min/mean/max, shaped like the rig's output."""
+    rng = np.random.default_rng(seed)
+    n = int(days * 24 * 60 / step_min)
+    t = pd.date_range(start=start, periods=n, freq=f"{step_min}min")
+    d = (t - t[0]).total_seconds() / 86400.0
+
+    ammonia = (6.2 * np.exp(-((d - 4.2) ** 2) / 5.0)
+               + 2.1 * np.exp(-((d - 11.5) ** 2) / 6.0)
+               + rng.normal(0, 0.18, n)).clip(min=0)
+
+    diurnal = 3.6 * np.sin(2 * np.pi * (d - 0.35))
+    mass_heat = 2.9 * np.exp(-((d - 4.0) ** 2) / 1.6)  # feeding aggregation
+    mean = 22.5 + diurnal * 0.55 + mass_heat + rng.normal(0, 0.25, n)
+    spread = 1.4 + 2.2 * np.exp(-((d - 4.0) ** 2) / 2.2) + rng.normal(0, 0.12, n)
+
+    return pd.DataFrame({
+        "Date/Time": t,
+        "Ammonia_ppm": np.round(ammonia, 3),
+        "Thermal_min_C": np.round(mean - spread.clip(min=0.2), 2),
+        "Thermal_mean_C": np.round(mean, 2),
+        "Thermal_max_C": np.round(mean + spread.clip(min=0.2), 2),
+    })
+
+
+DEV_REFERENCES = {
+    "L1 (first instar)": 120,
+    "L2 (second instar)": 300,
+    "L3 (third instar, feeding)": 600,
+    "L3 (post-feeding / wandering)": 850,
+    "Pupariation": 1200,
+    "Adult eclosion": 2400,
+}
+
 
 st.set_page_config(page_title="ENT 305 · Forward accumulation", layout="wide")
 
