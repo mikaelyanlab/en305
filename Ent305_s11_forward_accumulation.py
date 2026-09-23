@@ -575,8 +575,8 @@ st.plotly_chart(
 if not walk.empty:
 
     # The calculation was performed backward.
-    # Reconstruct cumulative ADH in chronological order so the graph
-    # reads naturally from estimated onset toward collection.
+    # Reconstruct accumulation in chronological order so the graph
+    # reads from developmental onset toward collection.
 
     chronological = (
         walk.sort_values("Interval_start")
@@ -584,26 +584,17 @@ if not walk.empty:
         .copy()
     )
 
-    chronological["ADH_from_onset"] = (
-        chronological["ADH_interval"]
-        .cumsum()
-    )
-
-    # Build a step-like series with a true zero at onset.
     x_values = []
     y_values = []
 
     if reached:
         x_values.append(onset_time)
-        y_values.append(0.0)
     else:
         x_values.append(
-            chronological.loc[
-                0,
-                "Interval_start"
-            ]
+            chronological.loc[0, "Interval_start"]
         )
-        y_values.append(0.0)
+
+    y_values.append(0.0)
 
     running_forward = 0.0
 
@@ -621,9 +612,7 @@ if not walk.empty:
             running_forward
         )
 
-
     fig2 = go.Figure()
-
 
     fig2.add_trace(
         go.Scatter(
@@ -639,78 +628,73 @@ if not walk.empty:
         )
     )
 
-
     fig2.add_hline(
         y=target_adh,
         line_dash="dash",
         line_color=GOLD,
         annotation_text=(
-            f"Requirement = "
-            f"{target_adh:,.0f} ADH"
+            f"Developmental requirement = {target_adh:,.0f} ADH"
         ),
         annotation_position="top left"
     )
-# Label the estimated beginning of development
-if reached:
-    fig2.add_annotation(
-        x=onset_time,
-        y=0,
-        text=(
-            "<b>Estimated developmental onset</b><br>"
-            f"{onset_time.strftime('%b %d, %Y · %H:%M')}"
-        ),
-        showarrow=True,
-        arrowhead=2,
-        arrowcolor=RUST,
-        ax=60,
-        ay=-55,
-        font=dict(
-            color=RUST,
-            size=12
-        ),
-        bgcolor="white",
-        bordercolor=RUST,
-        borderwidth=1
-    )
 
-# Label collection
-fig2.add_annotation(
-    x=collection_time,
-    y=target_adh,
-    text=(
-        "<b>Collection</b><br>"
-        f"{collection_time.strftime('%b %d, %Y · %H:%M')}"
-    ),
-    showarrow=True,
-    arrowhead=2,
-    arrowcolor=SLATE,
-    ax=-70,
-    ay=55,
-    font=dict(
-        color=SLATE,
-        size=12
-    ),
-    bgcolor="white",
-    bordercolor=SLATE,
-    borderwidth=1
-)
+    # Label estimated developmental onset
+    if reached:
+        fig2.add_annotation(
+            x=onset_time,
+            y=0,
+            text=(
+                "<b>Estimated developmental onset</b><br>"
+                f"{onset_time.strftime('%b %d, %Y · %H:%M')}"
+            ),
+            showarrow=True,
+            arrowhead=2,
+            arrowcolor=RUST,
+            ax=75,
+            ay=-55,
+            font=dict(
+                color=RUST,
+                size=12
+            ),
+            bgcolor="white",
+            bordercolor=RUST,
+            borderwidth=1
+        )
 
+    # Label collection
+    if reached:
+        fig2.add_annotation(
+            x=collection_time,
+            y=target_adh,
+            text=(
+                "<b>Collection</b><br>"
+                f"{collection_time.strftime('%b %d, %Y · %H:%M')}"
+            ),
+            showarrow=True,
+            arrowhead=2,
+            arrowcolor=SLATE,
+            ax=-75,
+            ay=55,
+            font=dict(
+                color=SLATE,
+                size=12
+            ),
+            bgcolor="white",
+            bordercolor=SLATE,
+            borderwidth=1
+        )
 
     fig2.update_layout(
-        yaxis_title=(
-            "Accumulated degree-hours (ADH)"
-        ),
+        yaxis_title="ADH accumulated since developmental onset",
         xaxis_title=None,
-        height=330,
+        height=400,
         **PLOT_LAYOUT
     )
-
 
     st.plotly_chart(
         fig2,
         use_container_width=True
     )
-
 
 # ===========================================================
 # Audit table
