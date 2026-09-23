@@ -1,12 +1,19 @@
 """
-ENT 305 — Session 11 · Thermal-Time Reasoning
-Forward accumulation.
+ENT 305 — Session 12 · Developmental Clock: Working Backward
 
-Per the session script this is NOT projected until minute 55. Students do the
-accumulation by hand first. When it appears, the point is the board line:
-    THE APP COMPUTES. IT DOES NOT KNOW.
+Students receive:
+    - specimen identity and developmental stage
+    - a temperature record
+    - an assigned developmental reference
 
-Run:  streamlit run ent305_s11_forward_accumulation.py
+They determine the appropriate lower developmental threshold and thermal
+requirement from the reference, then enter those values here.
+
+The app does one thing:
+    Start at collection and walk backward through the temperature history
+    until the required accumulated degree-hours have been reached.
+
+THE APP COMPUTES. IT DOES NOT KNOW.
 """
 
 import numpy as np
@@ -16,308 +23,735 @@ import streamlit as st
 
 
 # ===========================================================
-# Shared helpers — inlined so this file runs on its own.
+# Course styling
 # ===========================================================
-# --- course palette (matches the syllabus and slide deck) -------------------
+
 TEAL_D = "#14606B"
 TEAL_M = "#2E7C7B"
 RUST = "#9C4A1A"
 GOLD = "#9A7A42"
-GREEN = "#5E8A63"
 SLATE = "#2C3E45"
 MUTED = "#7C8F96"
 PAPER = "#F2F6F7"
 
 PLOT_LAYOUT = dict(
     template="plotly_white",
-    font=dict(family="Calibri, Arial, sans-serif", size=13, color=SLATE),
+    font=dict(
+        family="Calibri, Arial, sans-serif",
+        size=13,
+        color=SLATE
+    ),
     margin=dict(l=60, r=30, t=40, b=50),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        x=0
+    ),
 )
 
 
-# ---------------------------------------------------------------------------
-# Thermal accumulation
-# ---------------------------------------------------------------------------
-def interval_hours(times):
-    """Hours represented by each row. Last row inherits the previous spacing."""
-    t = pd.to_datetime(pd.Series(times)).reset_index(drop=True)
-    dt = t.diff().dt.total_seconds() / 3600.0
-    dt.iloc[0] = dt.iloc[1] if len(dt) > 1 and not pd.isna(dt.iloc[1]) else 1.0
-    return dt.ffill().to_numpy()
+# ===========================================================
+# Backward thermal-time calculation
+# ===========================================================
 
-
-def degree_hours(temps, hours, t_base):
+def backward_walk(
+    df,
+    collection_time,
+    target_adh,
+    t_base,
+    temp_col="Temp_C",
+    time_col="Date/Time"
+):
     """
-    Accumulated degree-hours per interval.
+    Walk backward from collection through a temperature record until
+    target_adh has been accumulated.
 
-    Temperatures at or below t_base bank ZERO. They do not bank a negative
-    value — the organism does not un-develop when it is cold. This is the
-    single most consequential line in the file.
+    INTERVAL CONVENTION
+    -------------------
+    A temperature recorded at time t is treated as representing the
+    interval from t until the next recorded timestamp.
+
+    Example:
+        13:00   20 C
+        14:00   21 C
+
+    The 20 C observation represents 13:00–14:00.
+
+    If collection occurs between two timestamps, only the portion of
+    that interval before collection is used.
+
+    Temperatures at or below Tbase contribute zero ADH.
+
+    Returns
+    -------
+    walk : DataFrame
+        Intervals used while walking backward.
+
+    onset_time : Timestamp or None
+        Estimated time at which the target thermal requirement is met.
+
+    reached : bool
+        True if the available temperature record contains enough
+        thermal accumulation to reach target_adh.
     """
-    above = np.maximum(0.0, np.asarray(temps, dtype=float) - float(t_base))
-    return above * np.asarray(hours, dtype=float)
 
+    d = df[[time_col, temp_col]].copy()
 
-def forward_accumulate(df, t_base, temp_col="Temp_C", time_col="Date/Time"):
-    """Walk forwards from the first row, banking degree-hours as we go."""
-    out = df.copy().sort_values(time_col).reset_index(drop=True)
-    hrs = interval_hours(out[time_col])
-    out["Hours"] = hrs
-    out["Above_base_C"] = np.maximum(0.0, out[temp_col].astype(float) - float(t_base))
-    out["ADH_interval"] = degree_hours(out[temp_col], hrs, t_base)
-    out["ADH_cumulative"] = out["ADH_interval"].cumsum()
-    out["ADD_cumulative"] = out["ADH_cumulative"] / 24.0
-    return out
+    d[time_col] = pd.to_datetime(
+        d[time_col],
+        errors="coerce"
+    )
 
+    d[temp_col] = pd.to_numeric(
+        d[temp_col],
+        errors="coerce"
+    )
 
-def backward_walk(df, collection_time, target_adh, t_base,
-                  temp_col="Temp_C", time_col="Date/Time"):
-    """
-    Start at collection and walk BACKWARDS until target_adh is banked.
+    d = (
+        d.dropna(subset=[time_col, temp_col])
+        .sort_values(time_col)
+        .drop_duplicates(subset=[time_col], keep="last")
+        .reset_index(drop=True)
+    )
 
-    Returns (table, onset_time, reached). `reached` is False when the record
-    runs out before the requirement is met — which is a finding, not an error,
-    and the app must say so rather than returning the earliest timestamp as if
-    it were an answer.
-    """
-    d = df.copy()
-    d[time_col] = pd.to_datetime(d[time_col])
-    d = d[d[time_col] <= pd.to_datetime(collection_time)]
-    d = d.sort_values(time_col, ascending=False).reset_index(drop=True)
+    collection_time = pd.to_datetime(collection_time)
+
+    # Only observations beginning before collection can contribute.
+    d = d[d[time_col] < collection_time].copy()
+
     if d.empty:
         return pd.DataFrame(), None, False
 
-    # Resolution-independent: pandas may hold ns or us timestamps, so never
-    # convert to raw integers here.
-    deltas = d[time_col].diff().dt.total_seconds().abs() / 3600.0
-    hrs = np.array(deltas.shift(-1).to_numpy(), dtype=float, copy=True)
-    if len(hrs) > 1 and not np.isnan(hrs[-2]):
-        hrs[-1] = hrs[-2]
-    else:
-        hrs[-1] = 1.0
-    hrs = np.nan_to_num(hrs, nan=1.0)
+    # Each observation represents the interval beginning at that timestamp.
+    d["Interval_end"] = d[time_col].shift(-1)
 
-    rows, running = [], 0.0
-    onset, reached = None, False
-    for i in range(len(d)):
-        temp = float(d.loc[i, temp_col])
-        above = max(0.0, temp - float(t_base))
-        step_h = float(hrs[i])
-        gained = above * step_h
+    # For the final available observation, the interval ends at collection.
+    d.loc[d.index[-1], "Interval_end"] = collection_time
 
-        if running + gained >= target_adh and above > 0:
-            need = target_adh - running
-            part_h = need / above
+    # If collection falls inside an existing interval, truncate at collection.
+    d["Interval_end"] = d["Interval_end"].where(
+        d["Interval_end"] <= collection_time,
+        collection_time
+    )
+
+    d["Hours"] = (
+        d["Interval_end"] - d[time_col]
+    ).dt.total_seconds() / 3600.0
+
+    # Remove zero/negative intervals.
+    d = d[d["Hours"] > 0].copy()
+
+    if d.empty:
+        return pd.DataFrame(), None, False
+
+    # Effective temperature above the developmental threshold.
+    d["Above_base_C"] = np.maximum(
+        0.0,
+        d[temp_col].astype(float) - float(t_base)
+    )
+
+    d["ADH_interval"] = (
+        d["Above_base_C"] * d["Hours"]
+    )
+
+    # Walk backward from collection.
+    d = d.sort_values(
+        time_col,
+        ascending=False
+    ).reset_index(drop=True)
+
+    rows = []
+    running = 0.0
+    onset_time = None
+    reached = False
+
+    for _, row in d.iterrows():
+
+        interval_start = row[time_col]
+        interval_end = row["Interval_end"]
+
+        temp = float(row[temp_col])
+        above = float(row["Above_base_C"])
+        hours = float(row["Hours"])
+        available_adh = float(row["ADH_interval"])
+
+        # Does the target fall somewhere inside this interval?
+        if (
+            above > 0
+            and running + available_adh >= target_adh
+        ):
+            adh_needed = target_adh - running
+            hours_needed = adh_needed / above
+
+            # We are walking backward from interval_end.
+            onset_time = (
+                interval_end
+                - pd.Timedelta(hours=hours_needed)
+            )
+
+            rows.append({
+                "Interval_start": onset_time,
+                "Interval_end": interval_end,
+                "Temp_C": temp,
+                "Above_base_C": above,
+                "Hours": hours_needed,
+                "ADH_interval": adh_needed,
+                "ADH_running": target_adh,
+            })
+
             running = target_adh
-            onset = d.loc[i, time_col] - pd.Timedelta(hours=part_h)
-            rows.append(dict(**{time_col: d.loc[i, time_col]}, Temp_C=temp,
-                             Above_base_C=above, Hours=round(part_h, 2),
-                             ADH_interval=round(need, 1),
-                             ADH_running=round(running, 1)))
             reached = True
             break
 
-        running += gained
-        rows.append(dict(**{time_col: d.loc[i, time_col]}, Temp_C=temp,
-                         Above_base_C=above, Hours=step_h,
-                         ADH_interval=round(gained, 1),
-                         ADH_running=round(running, 1)))
+        running += available_adh
 
-    return pd.DataFrame(rows), onset, reached
+        rows.append({
+            "Interval_start": interval_start,
+            "Interval_end": interval_end,
+            "Temp_C": temp,
+            "Above_base_C": above,
+            "Hours": hours,
+            "ADH_interval": available_adh,
+            "ADH_running": running,
+        })
 
+    walk = pd.DataFrame(rows)
 
-# ---------------------------------------------------------------------------
-# Sample data — replace with real microcosm records
-# ---------------------------------------------------------------------------
-def make_temperature_record(days=8.0, start="2026-09-01 05:00", step_min=60,
-                            mean_c=20.0, amplitude=4.5, seed=305,
-                            cold_night=None):
-    """
-    Diurnal temperature record. `cold_night` = (day_offset, drop_C) inserts a
-    cold stretch, which is how a walk gets longer without banking anything.
-    """
-    rng = np.random.default_rng(seed)
-    n = int(days * 24 * 60 / step_min)
-    t = pd.date_range(start=start, periods=n, freq=f"{step_min}min")
-    # .to_numpy() is essential: (t - t[0]).total_seconds() yields a pandas
-    # Index, which is immutable, so any later in-place edit would raise.
-    hours = np.asarray((t - t[0]).total_seconds() / 3600.0, dtype=float)
-    temp = np.asarray(mean_c + amplitude * np.sin(2 * np.pi * (hours - 9) / 24.0),
-                      dtype=float)
-    temp += rng.normal(0, 0.45, n)
-    temp += np.linspace(0, -2.5, n)  # gentle seasonal cooling
-    if cold_night:
-        off, drop = cold_night
-        mask = (hours >= off * 24) & (hours < off * 24 + 12)
-        temp[mask] -= drop
-    return pd.DataFrame({"Date/Time": t, "Temp_C": np.round(temp, 2)})
+    if not walk.empty:
+        numeric_cols = [
+            "Temp_C",
+            "Above_base_C",
+            "Hours",
+            "ADH_interval",
+            "ADH_running",
+        ]
+
+        walk[numeric_cols] = walk[numeric_cols].round(2)
+
+    return walk, onset_time, reached
 
 
-def make_ammonia_thermal_record(days=15.0, start="2026-09-01 00:00", step_min=30,
-                                seed=305):
-    """Ammonia and thermal min/mean/max, shaped like the rig's output."""
-    rng = np.random.default_rng(seed)
-    n = int(days * 24 * 60 / step_min)
-    t = pd.date_range(start=start, periods=n, freq=f"{step_min}min")
-    d = np.asarray((t - t[0]).total_seconds() / 86400.0, dtype=float)
+# ===========================================================
+# Streamlit page
+# ===========================================================
 
-    ammonia = (6.2 * np.exp(-((d - 4.2) ** 2) / 5.0)
-               + 2.1 * np.exp(-((d - 11.5) ** 2) / 6.0)
-               + rng.normal(0, 0.18, n)).clip(min=0)
+st.set_page_config(
+    page_title="ENT 305 · Developmental Clock",
+    layout="wide"
+)
 
-    diurnal = 3.6 * np.sin(2 * np.pi * (d - 0.35))
-    mass_heat = 2.9 * np.exp(-((d - 4.0) ** 2) / 1.6)  # feeding aggregation
-    mean = 22.5 + diurnal * 0.55 + mass_heat + rng.normal(0, 0.25, n)
-    spread = 1.4 + 2.2 * np.exp(-((d - 4.0) ** 2) / 2.2) + rng.normal(0, 0.12, n)
+st.title("Developmental Clock: Working Backward")
 
-    return pd.DataFrame({
-        "Date/Time": t,
-        "Ammonia_ppm": np.round(ammonia, 3),
-        "Thermal_min_C": np.round(mean - spread.clip(min=0.2), 2),
-        "Thermal_mean_C": np.round(mean, 2),
-        "Thermal_max_C": np.round(mean + spread.clip(min=0.2), 2),
-    })
+st.caption(
+    "Start at collection and work backward through the temperature history."
+)
 
 
-DEV_REFERENCES = {
-    "L1 (first instar)": 120,
-    "L2 (second instar)": 300,
-    "L3 (third instar, feeding)": 600,
-    "L3 (post-feeding / wandering)": 850,
-    "Pupariation": 1200,
-    "Adult eclosion": 2400,
-}
+# ===========================================================
+# Sidebar
+# ===========================================================
 
-
-st.set_page_config(page_title="ENT 305 · Forward accumulation", layout="wide")
-
-st.title("Forward accumulation")
-st.caption("Session 11 · Thermal-Time Reasoning — how much development does a "
-           "temperature history buy?")
-
-# ---------------------------------------------------------------- data
 with st.sidebar:
+
     st.header("Temperature record")
-    src = st.radio("Source", ["Built-in record", "Upload CSV"], index=0)
-    if src == "Upload CSV":
-        up = st.file_uploader("Two columns: Date/Time, Temp_C", type="csv")
-        if up is None:
-            st.info("Using the built-in record until a file is uploaded.")
-            df = make_temperature_record()
-        else:
-            df = pd.read_csv(up)
-            df["Date/Time"] = pd.to_datetime(df["Date/Time"], errors="coerce")
-            bad = int(df["Date/Time"].isna().sum())
-            if bad:
-                st.warning(f"{bad} row(s) have an unreadable Date/Time and are "
-                           f"shown below but excluded from the accumulation.")
-            df = df.dropna(subset=["Date/Time"])
-    else:
-        cold = st.checkbox("Include a cold stretch on day 3", value=False,
-                           help="A cold night makes the walk longer without "
-                                "banking anything.")
-        df = make_temperature_record(cold_night=(3, 7.0) if cold else None)
+
+    uploaded_file = st.file_uploader(
+        "Upload temperature record",
+        type="csv",
+        help="CSV must contain Date/Time and Temp_C columns."
+    )
+
+    if uploaded_file is None:
+        st.info(
+            "Upload the temperature record provided for your case."
+        )
+        st.stop()
+
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as exc:
+        st.error(
+            f"The CSV could not be read: {exc}"
+        )
+        st.stop()
+
+    required_columns = {
+        "Date/Time",
+        "Temp_C"
+    }
+
+    missing_columns = (
+        required_columns - set(df.columns)
+    )
+
+    if missing_columns:
+        st.error(
+            "The temperature file is missing required column(s): "
+            + ", ".join(sorted(missing_columns))
+        )
+        st.stop()
+
+    df["Date/Time"] = pd.to_datetime(
+        df["Date/Time"],
+        errors="coerce"
+    )
+
+    df["Temp_C"] = pd.to_numeric(
+        df["Temp_C"],
+        errors="coerce"
+    )
+
+    bad_rows = (
+        df["Date/Time"].isna()
+        | df["Temp_C"].isna()
+    )
+
+    n_bad = int(bad_rows.sum())
+
+    if n_bad:
+        st.warning(
+            f"{n_bad} row(s) contained an unreadable "
+            "date/time or temperature and were excluded."
+        )
+
+    df = (
+        df.loc[~bad_rows]
+        .sort_values("Date/Time")
+        .drop_duplicates(
+            subset=["Date/Time"],
+            keep="last"
+        )
+        .reset_index(drop=True)
+    )
+
+    if len(df) < 2:
+        st.error(
+            "The temperature record must contain at least "
+            "two usable observations."
+        )
+        st.stop()
 
     st.markdown("---")
-    st.header("Your assumptions")
-    t_base = st.slider("Base temperature, Tbase (°C)", 4.0, 16.0, 10.0, 0.5,
-                       help="Below this, development banks zero. This is an "
-                            "assumption, not a measurement.")
-    stage = st.selectbox("Target stage", list(DEV_REFERENCES.keys()), index=3)
-    default_adh = DEV_REFERENCES[stage]
-    target_adh = st.slider("Requirement to reach it (degree-hours)",
-                           50, 3000, int(default_adh), 10,
-                           help="Published figures come from another "
-                                "laboratory, another diet, constant "
-                                "conditions. Move it and watch.")
-    unit = st.radio("Display units", ["Degree-hours (ADH)", "Degree-days (ADD)"],
-                    index=0, horizontal=False)
 
-acc = forward_accumulate(df, t_base)
-divisor = 1.0 if unit.startswith("Degree-hours") else 24.0
-unit_label = "ADH" if divisor == 1.0 else "ADD"
-target_display = target_adh / divisor
+    st.header("Case inputs")
 
-reached_idx = acc.index[acc["ADH_cumulative"] >= target_adh]
-reached = len(reached_idx) > 0
-reach_time = acc.loc[reached_idx[0], "Date/Time"] if reached else None
+    collection_time = st.datetime_input(
+        "Collection date and time",
+        value=df["Date/Time"].max().to_pydatetime()
+    )
 
-# ---------------------------------------------------------------- headline
+    t_base = st.number_input(
+        "Lower developmental threshold (°C)",
+        min_value=0.0,
+        max_value=30.0,
+        value=None,
+        step=0.1,
+        placeholder="Enter from developmental reference",
+        help=(
+            "Enter the lower developmental threshold supported "
+            "by your assigned developmental reference."
+        )
+    )
+
+    target_adh = st.number_input(
+        "Thermal requirement (ADH)",
+        min_value=0.1,
+        value=None,
+        step=1.0,
+        placeholder="Enter from developmental reference",
+        help=(
+            "Enter the thermal requirement supported by your "
+            "assigned developmental reference."
+        )
+    )
+
+    run = st.button(
+        "Run backward",
+        type="primary",
+        use_container_width=True
+    )
+
+
+# ===========================================================
+# Waiting state
+# ===========================================================
+
+if not run:
+
+    st.info(
+        "Enter the values from your developmental reference, "
+        "then run the developmental clock backward."
+    )
+
+    st.stop()
+
+
+# ===========================================================
+# Validate case inputs
+# ===========================================================
+
+if t_base is None or target_adh is None:
+
+    st.error(
+        "Enter both the lower developmental threshold "
+        "and the thermal requirement."
+    )
+
+    st.stop()
+
+
+collection_time = pd.to_datetime(
+    collection_time
+)
+
+
+if collection_time <= df["Date/Time"].min():
+
+    st.error(
+        "The collection time must occur after the beginning "
+        "of the temperature record."
+    )
+
+    st.stop()
+
+
+if collection_time > df["Date/Time"].max():
+
+    st.warning(
+        "The collection time occurs after the final temperature "
+        "observation. The final recorded temperature will be treated "
+        "as representing the interval from that observation until "
+        "collection."
+    )
+
+
+# ===========================================================
+# Run calculation
+# ===========================================================
+
+walk, onset_time, reached = backward_walk(
+    df=df,
+    collection_time=collection_time,
+    target_adh=float(target_adh),
+    t_base=float(t_base)
+)
+
+
+# ===========================================================
+# Main results
+# ===========================================================
+
 c1, c2, c3 = st.columns(3)
-c1.metric(f"Banked over the whole record ({unit_label})",
-          f"{acc['ADH_cumulative'].iloc[-1] / divisor:,.0f}")
-c2.metric(f"Requirement ({unit_label})", f"{target_display:,.0f}")
+
+c1.metric(
+    "Thermal requirement",
+    f"{target_adh:,.0f} ADH"
+)
+
+c2.metric(
+    "Collection",
+    collection_time.strftime(
+        "%d %b %Y · %H:%M"
+    )
+)
+
+
 if reached:
-    elapsed = (reach_time - acc["Date/Time"].iloc[0]).total_seconds() / 86400
-    c3.metric("Requirement met", reach_time.strftime("%d %b %H:%M"),
-              f"{elapsed:.2f} days in")
+
+    elapsed_hours = (
+        collection_time - onset_time
+    ).total_seconds() / 3600.0
+
+    c3.metric(
+        "Developmental interval",
+        f"{elapsed_hours:.1f} hours"
+    )
+
+    st.success(
+        "Estimated developmental onset: "
+        f"**{onset_time.strftime('%d %b %Y · %H:%M')}**"
+    )
+
 else:
-    c3.metric("Requirement met", "Not within this record")
 
-if not reached:
-    st.warning("The record ends before the requirement is met. That is a "
-               "finding, not a failure — say so rather than extrapolating.")
+    c3.metric(
+        "Developmental interval",
+        "Not determined"
+    )
 
-# ---------------------------------------------------------------- plots
+    st.warning(
+        "The available temperature record ends before the "
+        "required ADH is reached. A developmental-onset "
+        "estimate cannot be calculated from this record."
+    )
+
+
+# ===========================================================
+# Temperature-history plot
+# ===========================================================
+
+plot_df = df[
+    df["Date/Time"] <= collection_time
+].copy()
+
+
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=acc["Date/Time"], y=acc["Temp_C"], name="Temperature (°C)",
-                         line=dict(color=TEAL_M, width=1.5)))
-fig.add_hline(y=t_base, line_dash="dot", line_color=RUST,
-              annotation_text=f"Tbase = {t_base:g} °C", annotation_position="top left")
-fig.update_layout(yaxis_title="°C", xaxis_title=None, height=280, **PLOT_LAYOUT)
-st.plotly_chart(fig, use_container_width=True)
 
-fig2 = go.Figure()
-fig2.add_trace(go.Scatter(x=acc["Date/Time"], y=acc["ADH_cumulative"] / divisor,
-                          name=f"Accumulated {unit_label}", fill="tozeroy",
-                          line=dict(color=TEAL_D, width=2)))
-fig2.add_hline(y=target_display, line_dash="dash", line_color=GOLD,
-               annotation_text=f"{stage} — {target_display:,.0f} {unit_label}",
-               annotation_position="top left")
+
+fig.add_trace(
+    go.Scatter(
+        x=plot_df["Date/Time"],
+        y=plot_df["Temp_C"],
+        name="Temperature",
+        mode="lines",
+        line=dict(
+            color=TEAL_M,
+            width=1.8
+        )
+    )
+)
+
+
+fig.add_hline(
+    y=t_base,
+    line_dash="dot",
+    line_color=RUST,
+    annotation_text=(
+        f"Tbase = {t_base:g} °C"
+    ),
+    annotation_position="top left"
+)
+
+
+fig.add_vline(
+    x=collection_time,
+    line_color=SLATE,
+    line_width=2,
+    annotation_text="Collection",
+    annotation_position="top right"
+)
+
+
 if reached:
-    fig2.add_vline(x=reach_time, line_color=RUST, line_width=2,
-                   annotation_text="requirement met", annotation_position="top right")
-fig2.update_layout(yaxis_title=f"Accumulated {unit_label}", height=330, **PLOT_LAYOUT)
-st.plotly_chart(fig2, use_container_width=True)
 
-# ---------------------------------------------------------------- sensitivity
-st.subheader("How much does Tbase matter?")
-st.caption("Same record. Same requirement. Only the assumption changes.")
+    fig.add_vline(
+        x=onset_time,
+        line_color=RUST,
+        line_width=2,
+        annotation_text=(
+            "Estimated developmental onset"
+        ),
+        annotation_position="top left"
+    )
 
-rows = []
-for tb in np.arange(max(4.0, t_base - 4), t_base + 4.5, 1.0):
-    a = forward_accumulate(df, tb)
-    hit = a.index[a["ADH_cumulative"] >= target_adh]
-    if len(hit):
-        when = a.loc[hit[0], "Date/Time"]
-        rows.append({"Tbase (°C)": f"{tb:g}",
-                     "Requirement met": when.strftime("%d %b %H:%M"),
-                     "Days from record start":
-                         round((when - a["Date/Time"].iloc[0]).total_seconds() / 86400, 2)})
+    fig.add_vrect(
+        x0=onset_time,
+        x1=collection_time,
+        fillcolor=GOLD,
+        opacity=0.12,
+        line_width=0
+    )
+
+
+fig.update_layout(
+    yaxis_title="Temperature (°C)",
+    xaxis_title=None,
+    height=340,
+    **PLOT_LAYOUT
+)
+
+
+st.plotly_chart(
+    fig,
+    use_container_width=True
+)
+
+
+# ===========================================================
+# Backward accumulation plot
+# ===========================================================
+
+if not walk.empty:
+
+    # The calculation was performed backward.
+    # Reconstruct cumulative ADH in chronological order so the graph
+    # reads naturally from estimated onset toward collection.
+
+    chronological = (
+        walk.sort_values("Interval_start")
+        .reset_index(drop=True)
+        .copy()
+    )
+
+    chronological["ADH_from_onset"] = (
+        chronological["ADH_interval"]
+        .cumsum()
+    )
+
+    # Build a step-like series with a true zero at onset.
+    x_values = []
+    y_values = []
+
+    if reached:
+        x_values.append(onset_time)
+        y_values.append(0.0)
     else:
-        rows.append({"Tbase (°C)": f"{tb:g}", "Requirement met": "not within record",
-                     "Days from record start": None})
-sens = pd.DataFrame(rows)
-st.dataframe(sens, use_container_width=True, hide_index=True)
+        x_values.append(
+            chronological.loc[
+                0,
+                "Interval_start"
+            ]
+        )
+        y_values.append(0.0)
 
-spread = sens["Days from record start"].dropna()
-if len(spread) > 1:
-    st.info(f"Across this range of Tbase the answer moves by "
-            f"**{spread.max() - spread.min():.2f} days** — from identical data.")
+    running_forward = 0.0
 
-with st.expander("The interval table"):
-    show = acc[["Date/Time", "Temp_C", "Above_base_C", "Hours",
-                "ADH_interval", "ADH_cumulative"]].copy()
-    show[["Above_base_C", "ADH_interval", "ADH_cumulative"]] = \
-        show[["Above_base_C", "ADH_interval", "ADH_cumulative"]].round(1)
-    st.dataframe(show, use_container_width=True, hide_index=True, height=320)
+    for _, row in chronological.iterrows():
+
+        running_forward += float(
+            row["ADH_interval"]
+        )
+
+        x_values.append(
+            row["Interval_end"]
+        )
+
+        y_values.append(
+            running_forward
+        )
+
+
+    fig2 = go.Figure()
+
+
+    fig2.add_trace(
+        go.Scatter(
+            x=x_values,
+            y=y_values,
+            name="Accumulated ADH",
+            mode="lines",
+            line=dict(
+                color=TEAL_D,
+                width=2
+            ),
+            fill="tozeroy"
+        )
+    )
+
+
+    fig2.add_hline(
+        y=target_adh,
+        line_dash="dash",
+        line_color=GOLD,
+        annotation_text=(
+            f"Requirement = "
+            f"{target_adh:,.0f} ADH"
+        ),
+        annotation_position="top left"
+    )
+
+
+    fig2.update_layout(
+        yaxis_title=(
+            "Accumulated degree-hours (ADH)"
+        ),
+        xaxis_title=None,
+        height=330,
+        **PLOT_LAYOUT
+    )
+
+
+    st.plotly_chart(
+        fig2,
+        use_container_width=True
+    )
+
+
+# ===========================================================
+# Audit table
+# ===========================================================
+
+with st.expander(
+    "Show the calculation"
+):
+
+    if walk.empty:
+
+        st.write(
+            "No usable intervals were available."
+        )
+
+    else:
+
+        show = walk[
+            [
+                "Interval_start",
+                "Interval_end",
+                "Temp_C",
+                "Above_base_C",
+                "Hours",
+                "ADH_interval",
+                "ADH_running",
+            ]
+        ].copy()
+
+
+        show = show.rename(
+            columns={
+                "Interval_start":
+                    "Interval begins",
+
+                "Interval_end":
+                    "Interval ends",
+
+                "Temp_C":
+                    "Temperature (°C)",
+
+                "Above_base_C":
+                    "Degrees above Tbase",
+
+                "Hours":
+                    "Hours used",
+
+                "ADH_interval":
+                    "ADH gained",
+
+                "ADH_running":
+                    "ADH accumulated backward",
+            }
+        )
+
+
+        st.dataframe(
+            show,
+            use_container_width=True,
+            hide_index=True,
+            height=340
+        )
+
+
+# ===========================================================
+# Footer
+# ===========================================================
 
 st.markdown(
-    f"<div style='background:#F2F6F7;border-left:4px solid {RUST};padding:14px 18px;"
-    f"margin-top:20px;font-size:1.05rem;color:{SLATE}'>"
-    f"<b>The app computes. It does not know.</b><br>"
-    f"<span style='color:{MUTED}'>It does not know where the temperature record "
-    f"was taken, whether the requirement applies to this population, or whether "
-    f"anything was developing at all.</span></div>",
-    unsafe_allow_html=True)
+    f"""
+    <div style="
+        background:{PAPER};
+        border-left:4px solid {RUST};
+        padding:14px 18px;
+        margin-top:20px;
+        font-size:1.05rem;
+        color:{SLATE};
+    ">
+        <b>THE APP COMPUTES. IT DOES NOT KNOW.</b><br>
+        <span style="color:{MUTED}">
+        You supplied the temperature record, developmental threshold,
+        thermal requirement, and collection time. The calculation cannot
+        determine whether those inputs are appropriate.
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
