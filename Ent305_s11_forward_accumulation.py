@@ -242,7 +242,7 @@ st.set_page_config(
 )
 
 st.title("ENT-305 (2026) - Developmental Clock: Working Backward")
-st.subtitle(
+st.markdown(
     "Aram Mikaelyan, PhD | North Carolina State University"
 )
 st.caption(
