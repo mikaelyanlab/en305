@@ -650,6 +650,50 @@ if not walk.empty:
         ),
         annotation_position="top left"
     )
+# Label the estimated beginning of development
+if reached:
+    fig2.add_annotation(
+        x=onset_time,
+        y=0,
+        text=(
+            "<b>Estimated developmental onset</b><br>"
+            f"{onset_time.strftime('%b %d, %Y · %H:%M')}"
+        ),
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor=RUST,
+        ax=60,
+        ay=-55,
+        font=dict(
+            color=RUST,
+            size=12
+        ),
+        bgcolor="white",
+        bordercolor=RUST,
+        borderwidth=1
+    )
+
+# Label collection
+fig2.add_annotation(
+    x=collection_time,
+    y=target_adh,
+    text=(
+        "<b>Collection</b><br>"
+        f"{collection_time.strftime('%b %d, %Y · %H:%M')}"
+    ),
+    showarrow=True,
+    arrowhead=2,
+    arrowcolor=SLATE,
+    ax=-70,
+    ay=55,
+    font=dict(
+        color=SLATE,
+        size=12
+    ),
+    bgcolor="white",
+    bordercolor=SLATE,
+    borderwidth=1
+)
 
 
     fig2.update_layout(
