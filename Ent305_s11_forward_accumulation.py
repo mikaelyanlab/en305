@@ -241,9 +241,9 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("ENT-305 (2026) - Developmental Clock: Working Backward")
+st.title("Developmental Clock: Working Backward")
 st.markdown(
-    "Aram Mikaelyan, PhD | North Carolina State University"
+    "ENT-305 (2026) - Introduction to Forensic Entomology - The Ecology of Decay | Aram Mikaelyan, PhD | North Carolina State University"
 )
 st.caption(
     "Start at collection and work backward through the temperature history."
