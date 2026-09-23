@@ -241,8 +241,10 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Developmental Clock: Working Backward")
-
+st.title("ENT-305 (2026) - Developmental Clock: Working Backward")
+st.subtitle(
+    "Aram Mikaelyan, PhD | North Carolina State University"
+)
 st.caption(
     "Start at collection and work backward through the temperature history."
 )
