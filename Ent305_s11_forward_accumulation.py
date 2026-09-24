@@ -1,6 +1,6 @@
 """
 ENT 305 — Session 12 · Developmental Clock: Working Backward
-
+Aram Mikaelyan, PhD (Entomology and Plant Pathology, NC State)
 Students receive:
     - specimen identity and developmental stage
     - a temperature record
