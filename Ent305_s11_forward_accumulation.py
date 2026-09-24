@@ -13,6 +13,9 @@ The app does one thing:
     Start at collection and walk backward through the temperature history
     until the required accumulated degree-hours have been reached.
 
+Students may also test a temperature scenario by applying a uniform
+adjustment to the uploaded temperature record.
+
 THE APP COMPUTES. IT DOES NOT KNOW.
 """
 
@@ -193,7 +196,7 @@ def backward_walk(
             rows.append({
                 "Interval_start": onset_time,
                 "Interval_end": interval_end,
-                "Temp_C": temp,
+                "Temperature_used_C": temp,
                 "Above_base_C": above,
                 "Hours": hours_needed,
                 "ADH_interval": adh_needed,
@@ -209,7 +212,7 @@ def backward_walk(
         rows.append({
             "Interval_start": interval_start,
             "Interval_end": interval_end,
-            "Temp_C": temp,
+            "Temperature_used_C": temp,
             "Above_base_C": above,
             "Hours": hours,
             "ADH_interval": available_adh,
@@ -220,7 +223,7 @@ def backward_walk(
 
     if not walk.empty:
         numeric_cols = [
-            "Temp_C",
+            "Temperature_used_C",
             "Above_base_C",
             "Hours",
             "ADH_interval",
@@ -242,9 +245,13 @@ st.set_page_config(
 )
 
 st.title("Developmental Clock: Working Backward")
+
 st.markdown(
-    "ENT-305 (2026) - Introduction to Forensic Entomology - The Ecology of Decay | Aram Mikaelyan, PhD | North Carolina State University"
+    "ENT-305 (2026) - Introduction to Forensic Entomology - "
+    "The Ecology of Decay | Aram Mikaelyan, PhD | "
+    "North Carolina State University"
 )
+
 st.caption(
     "Start at collection and work backward through the temperature history."
 )
@@ -272,6 +279,7 @@ with st.sidebar:
 
     try:
         df = pd.read_csv(uploaded_file)
+
     except Exception as exc:
         st.error(
             f"The CSV could not be read: {exc}"
@@ -341,6 +349,19 @@ with st.sidebar:
     collection_time = st.datetime_input(
         "Collection date and time",
         value=df["Date/Time"].max().to_pydatetime()
+    )
+
+    temp_adjustment = st.number_input(
+        "Temperature scenario adjustment (°C)",
+        min_value=-10.0,
+        max_value=10.0,
+        value=0.0,
+        step=0.5,
+        help=(
+            "Applies the same adjustment to every temperature in "
+            "the uploaded record. Use 0.0 to use the station "
+            "record as provided."
+        )
     )
 
     t_base = st.number_input(
@@ -429,14 +450,26 @@ if collection_time > df["Date/Time"].max():
 
 
 # ===========================================================
+# Apply temperature scenario
+# ===========================================================
+
+df_calc = df.copy()
+
+df_calc["Temp_Adjusted_C"] = (
+    df_calc["Temp_C"] + float(temp_adjustment)
+)
+
+
+# ===========================================================
 # Run calculation
 # ===========================================================
 
 walk, onset_time, reached = backward_walk(
-    df=df,
+    df=df_calc,
     collection_time=collection_time,
     target_adh=float(target_adh),
-    t_base=float(t_base)
+    t_base=float(t_base),
+    temp_col="Temp_Adjusted_C"
 )
 
 
@@ -444,7 +477,7 @@ walk, onset_time, reached = backward_walk(
 # Main results
 # ===========================================================
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
 c1.metric(
     "Thermal requirement",
@@ -452,6 +485,11 @@ c1.metric(
 )
 
 c2.metric(
+    "Temperature adjustment",
+    f"{temp_adjustment:+.1f} °C"
+)
+
+c3.metric(
     "Collection",
     collection_time.strftime(
         "%d %b %Y · %H:%M"
@@ -465,7 +503,7 @@ if reached:
         collection_time - onset_time
     ).total_seconds() / 3600.0
 
-    c3.metric(
+    c4.metric(
         "Developmental interval",
         f"{elapsed_hours:.1f} hours"
     )
@@ -477,7 +515,7 @@ if reached:
 
 else:
 
-    c3.metric(
+    c4.metric(
         "Developmental interval",
         "Not determined"
     )
@@ -497,22 +535,60 @@ plot_df = df[
     df["Date/Time"] <= collection_time
 ].copy()
 
+plot_df["Temp_Adjusted_C"] = (
+    plot_df["Temp_C"] + float(temp_adjustment)
+)
+
 
 fig = go.Figure()
 
 
-fig.add_trace(
-    go.Scatter(
-        x=plot_df["Date/Time"],
-        y=plot_df["Temp_C"],
-        name="Temperature",
-        mode="lines",
-        line=dict(
-            color=TEAL_M,
-            width=1.8
+# If no adjustment is being applied, show only the station record.
+if temp_adjustment == 0:
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df["Date/Time"],
+            y=plot_df["Temp_C"],
+            name="Station temperature",
+            mode="lines",
+            line=dict(
+                color=TEAL_M,
+                width=1.8
+            )
         )
     )
-)
+
+# If an adjustment is being applied, show both the original station
+# record and the temperature series actually used in the calculation.
+else:
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df["Date/Time"],
+            y=plot_df["Temp_C"],
+            name="Station temperature",
+            mode="lines",
+            line=dict(
+                color=MUTED,
+                width=1.5,
+                dash="dot"
+            )
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df["Date/Time"],
+            y=plot_df["Temp_Adjusted_C"],
+            name=f"Temperature used ({temp_adjustment:+g} °C)",
+            mode="lines",
+            line=dict(
+                color=TEAL_M,
+                width=2.2
+            )
+        )
+    )
 
 
 fig.add_hline(
@@ -591,6 +667,7 @@ if not walk.empty:
 
     if reached:
         x_values.append(onset_time)
+
     else:
         x_values.append(
             chronological.loc[0, "Interval_start"]
@@ -640,8 +717,9 @@ if not walk.empty:
         annotation_position="top left"
     )
 
-    # Label estimated developmental onset
+    # Label estimated developmental onset.
     if reached:
+
         fig2.add_annotation(
             x=onset_time,
             y=0,
@@ -663,8 +741,9 @@ if not walk.empty:
             borderwidth=1
         )
 
-    # Label collection
+    # Label collection.
     if reached:
+
         fig2.add_annotation(
             x=collection_time,
             y=target_adh,
@@ -698,6 +777,7 @@ if not walk.empty:
         use_container_width=True
     )
 
+
 # ===========================================================
 # Audit table
 # ===========================================================
@@ -718,7 +798,7 @@ with st.expander(
             [
                 "Interval_start",
                 "Interval_end",
-                "Temp_C",
+                "Temperature_used_C",
                 "Above_base_C",
                 "Hours",
                 "ADH_interval",
@@ -735,8 +815,8 @@ with st.expander(
                 "Interval_end":
                     "Interval ends",
 
-                "Temp_C":
-                    "Temperature (°C)",
+                "Temperature_used_C":
+                    "Temperature used (°C)",
 
                 "Above_base_C":
                     "Degrees above Tbase",
@@ -777,9 +857,9 @@ st.markdown(
     ">
         <b>THE APP COMPUTES. IT DOES NOT KNOW.</b><br>
         <span style="color:{MUTED}">
-        You supplied the temperature record, developmental threshold,
-        thermal requirement, and collection time. The calculation cannot
-        determine whether those inputs are appropriate.
+        You supplied the temperature record, temperature adjustment,
+        developmental threshold, thermal requirement, and collection time.
+        The calculation cannot determine whether those inputs are appropriate.
         </span>
     </div>
     """,
